@@ -655,6 +655,11 @@ void Ekf::calculateOutputStates()
 	Quaternion dq;
 	dq.from_axis_angle(delta_angle);
 
+	// rotate the delta velocity to earth frame
+	// use half the value - the other half is calculated using the rotation
+	// at the end of the delta angle interval
+	Vector3f delta_vel_NED = _R_to_earth_now * delta_vel * 0.5f;
+
 	// rotate the previous INS quaternion by the delta quaternions
 	_output_new.time_us = imu_new.time_us;
 	_output_new.quat_nominal = dq * _output_new.quat_nominal;
@@ -666,8 +671,9 @@ void Ekf::calculateOutputStates()
 	_R_to_earth_now = quat_to_invrotmat(_output_new.quat_nominal);
 
 	// rotate the delta velocity to earth frame
-	// apply a delta velocity correction required to track the velocity states at the EKF fusion time horizon
-	Vector3f delta_vel_NED = _R_to_earth_now * delta_vel + _delta_vel_corr;
+	// use half the value - the other half is calculated using the rotation
+	// at the start of the delta angle interval
+	delta_vel_NED += _R_to_earth_now * delta_vel * 0.5f;
 
 	// corrrect for measured accceleration due to gravity
 	delta_vel_NED(2) += _gravity_mss * imu_new.delta_vel_dt;
@@ -676,7 +682,8 @@ void Ekf::calculateOutputStates()
 	Vector3f vel_last = _output_new.vel;
 
 	// increment the INS velocity states by the measurement plus corrections
-	_output_new.vel += delta_vel_NED;
+	// correction required to track the velocity states at the EKF fusion time horizon
+	_output_new.vel += delta_vel_NED + _delta_vel_corr;
 
 	// use trapezoidal integration to calculate the INS position states
 	// apply a velocity correction required to track the position states at the EKF fusion time horizon
