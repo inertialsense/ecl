@@ -160,6 +160,7 @@ private:
 	Vector3f _earth_rate_NED;	// earth rotation vector (NED) in rad/s
 
 	matrix::Dcm<float> _R_to_earth;	// transformation matrix from body frame to earth frame from last EKF predition
+	matrix::Dcm<float> _rot_mat_inv;// transformaton matrix from frame at end of IMU downsampling interval to frame at start
 
 	float P[_k_num_states][_k_num_states];	// state covariance matrix
 	float KH[_k_num_states][_k_num_states]; // intermediate variable for the covariance update

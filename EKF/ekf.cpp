@@ -113,6 +113,8 @@ Ekf::Ekf():
 	_flow_gyro_bias = {};
 	_imu_del_ang_of = {};
 	_gps_check_fail_status.value = 0;
+	memset(_rot_mat_inv, 0, sizeof(_rot_mat_inv));
+	_rot_mat_inv(2,2) = _rot_mat_inv(1,1) = _rot_mat_inv(0,0) = 1.0f;
 }
 
 Ekf::~Ekf()
@@ -522,14 +524,15 @@ void Ekf::predictState()
 	Vector3f vel_last = _state.vel;
 
 	// calculate the increment in velocity using the previous orientation
-	Vector3f delta_vel_earth_1 = _R_to_earth * _imu_sample_delayed.delta_vel;
+	// do this before the delta rotation is applied to be consistent with the
+	// downsampling method used prior to buffering of data
+	Vector3f delta_vel_earth = _R_to_earth * _imu_sample_delayed.delta_vel;
 
 	// update the rotation matrix and calculate the increment in velocity using the current orientation
 	_R_to_earth = quat_to_invrotmat(_state.quat_nominal);
-	Vector3f delta_vel_earth_2 = _R_to_earth * _imu_sample_delayed.delta_vel;
 
-	// Update the velocity assuming constant angular rate and acceleration across the same delta time interval
-	_state.vel += (delta_vel_earth_1 + delta_vel_earth_2) * 0.5f;
+	// Update the velocity using
+	_state.vel += delta_vel_earth;
 
 	// compensate for acceleration due to gravity
 	_state.vel(2) += _gravity_mss * _imu_sample_delayed.delta_vel_dt;
@@ -545,46 +548,75 @@ void Ekf::predictState()
 
 bool Ekf::collect_imu(imuSample &imu)
 {
+	// Downsample IMU data to 100Hz and store in a FIFO buffer
+
+	// correct imu data for scale factor errors
 	imu.delta_ang(0) = imu.delta_ang(0) * _state.gyro_scale(0);
 	imu.delta_ang(1) = imu.delta_ang(1) * _state.gyro_scale(1);
 	imu.delta_ang(2) = imu.delta_ang(2) * _state.gyro_scale(2);
 
+	// correct delta angle and Z vertical delta velocity data for bias offsets where the correction is corrected for timing jitter
 	imu.delta_ang -= _state.gyro_bias * imu.delta_ang_dt / (_dt_imu_avg > 0 ? _dt_imu_avg : 0.01f);
-	imu.delta_vel(2) -= _state.accel_z_bias * imu.delta_vel_dt / (_dt_imu_avg > 0 ? _dt_imu_avg : 0.01f);;
+	imu.delta_vel(2) -= _state.accel_z_bias * imu.delta_vel_dt / (_dt_imu_avg > 0 ? _dt_imu_avg : 0.01f);
 
+	// use the most recent IMU data
 	_imu_sample_new.delta_ang	= imu.delta_ang;
 	_imu_sample_new.delta_vel	= imu.delta_vel;
 	_imu_sample_new.delta_ang_dt	= imu.delta_ang_dt;
 	_imu_sample_new.delta_vel_dt	= imu.delta_vel_dt;
 	_imu_sample_new.time_us	= imu.time_us;
 
+	// accumulate the time for the delta angles and velocities
 	_imu_down_sampled.delta_ang_dt += imu.delta_ang_dt;
 	_imu_down_sampled.delta_vel_dt += imu.delta_vel_dt;
 
+	// rotate the delta velocities back to the starting frame
+	Vector3f delta_vel_1 = _rot_mat_inv * _imu_sample_new.delta_vel;
+
+	// accumulate the delta angles using a quaternion product algorithm
+	// this prevents attitude errors due to downsampling
 	Quaternion delta_q;
 	delta_q.rotate(imu.delta_ang);
 	_q_down_sampled =  _q_down_sampled * delta_q;
 	_q_down_sampled.normalize();
 
-	matrix::Dcm<float> delta_R(delta_q.inversed());
-	_imu_down_sampled.delta_vel = delta_R * _imu_down_sampled.delta_vel;
-	_imu_down_sampled.delta_vel += imu.delta_vel;
+	// rotate the delta velocities back to the starting frame
+	_rot_mat_inv = quat_to_invrotmat(_q_down_sampled);
+	Vector3f delta_vel_2 = rot_mat_inv * _imu_sample_new.delta_vel;
+
+	// calculate an average delta velocity at the starting frame, assuming that the acceleration
+	// and angular rate are constant across the IMU integration interval and accumulate it
+	_imu_down_sampled.delta_vel += (delta_vel_1 + delta_vel_2) * 0.5f;
 
 	if ((_dt_imu_avg * _imu_ticks >= (float)(FILTER_UPDATE_PERRIOD_MS) / 1000) ||
 	    _dt_imu_avg * _imu_ticks >= 0.02f) {
 
-		imu.delta_ang     = _q_down_sampled.to_axis_angle();
-		imu.delta_vel     = _imu_down_sampled.delta_vel;
+		// convert the accumualted quaternion to an equivalent delta angle
+		// and output
+		imu.delta_ang = _q_down_sampled.to_axis_angle();
+
+		// output accumulated delta velocities
+		// NOTE: the delta velocities have been accumulated at the starting frame
+		// this has to be take into account in downstream INS processing
+		imu.delta_vel = _imu_down_sampled.delta_vel;
+
+		// output accumulated times
 		imu.delta_ang_dt  = _imu_down_sampled.delta_ang_dt;
 		imu.delta_vel_dt  = _imu_down_sampled.delta_vel_dt;
-		imu.time_us       = imu.time_us;
 
+		// write out the effective measurement time of the downsampled data
+		imu.time_us = imu.time_us;
+
+		// zero all accumulated variables
 		_imu_down_sampled.delta_ang.setZero();
 		_imu_down_sampled.delta_vel.setZero();
 		_imu_down_sampled.delta_ang_dt = 0.0f;
 		_imu_down_sampled.delta_vel_dt = 0.0f;
 		_q_down_sampled(0) = 1.0f;
 		_q_down_sampled(1) = _q_down_sampled(2) = _q_down_sampled(3) = 0.0f;
+		memset(_rot_mat_inv, 0, sizeof(_rot_mat_inv));
+		_rot_mat_inv(2,2) = _rot_mat_inv(1,1) = _rot_mat_inv(0,0) = 1.0f;
+
 		return true;
 	}
 
