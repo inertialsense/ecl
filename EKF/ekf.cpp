@@ -112,7 +112,14 @@ Ekf::Ekf():
 	_time_vert_vel_reset(0),
 	_time_bad_vert_accel(0)
 {
-	_state = {};
+	_state.accel_bias.setZero();
+	_state.gyro_bias.setZero();
+	_state.mag_B.setZero();
+	_state.mag_I.setZero();
+	_state.pos.setZero();
+	_state.quat_nominal.setZero();
+	_state.vel.setZero();
+	_state.wind_vel.setZero();
 	_last_known_posNE.setZero();
 	_earth_rate_NED.setZero();
 	_R_to_earth = matrix::Dcm<float>();
