@@ -307,10 +307,10 @@ struct parameters {
 		req_vdrift = 0.5f;
 
 		// XYZ offset of sensors in body axes (m)
-		imu_pos_body = {};
-		gps_pos_body = {};
-		rng_pos_body = {};
-		flow_pos_body = {};
+		imu_pos_body.setZero();
+		gps_pos_body.setZero();
+		rng_pos_body.setZero();
+		flow_pos_body.setZero();
 
 		// output complementary filter tuning time constants
 		vel_Tau = 0.5f;
